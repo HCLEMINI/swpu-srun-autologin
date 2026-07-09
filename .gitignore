@@ -1,0 +1,24 @@
+# ── 私密配置(切勿提交真实账号密码) ──
+config.json
+config.local.json
+
+# ── 本地加密验证脚本(含测试向量, 不随仓库发布) ──
+_selftest.py
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ── PyInstaller 构建产物 ──
+build/
+dist/
+*.spec
+
+# ── 编辑器/系统 ──
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
