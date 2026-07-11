@@ -7,9 +7,9 @@
   * 启动即自动连接(默认「移动无线 @yd」, 可在界面修改)
   * 后台周期检测连通性, 断连自动重连(失败退避, 不狂刷)
   * 手动 连接 / 断开 / 立即检测
-  * 开机自启(写 HKCU\\...\\Run 注册表, 免 UAC)
+  * 开机自启 = 任务计划(系统启动时以无界面服务运行, 先于桌面程序联网)
   * 配置持久化到同目录 config.json
-  * --minimized 启动后最小化到任务栏
+  * --minimized 启动后最小化到任务栏; --headless 无界面服务模式
 
 依赖: 仅 Python 标准库 + srun_login.py (同目录)。打包用 PyInstaller。
 """
@@ -19,6 +19,8 @@ import json
 import time
 import queue
 import threading
+import subprocess
+import ctypes
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -51,6 +53,7 @@ DEFAULT_CONFIG = {
 }
 APP_REG_NAME = "SrunAutoLogin"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+TASK_NAME = "SrunAutoLogin-Boot"   # 任务计划名: 系统启动时触发
 
 
 def app_dir() -> str:
@@ -70,36 +73,69 @@ def exe_path() -> str:
         os.path.abspath(sys.argv[0])
 
 
+def load_config_file() -> dict:
+    """从 config.json 读取并合并默认值(供 GUI 与 headless 共用)。"""
+    cfg = dict(DEFAULT_CONFIG)
+    try:
+        with open(config_path(), "r", encoding="utf-8") as f:
+            cfg.update(json.load(f))
+    except Exception:
+        pass
+    return cfg
+
+
 # --------------------------------------------------------------------------- #
-#  开机自启(注册表, 仅 HKCU, 无需提权)
+#  开机自启 = 任务计划(系统启动时 /SC ONSTART, 以 SYSTEM 运行无界面服务)
+#  - 系统启动(boot)即触发, 先于用户登录与所有桌面程序, 真正"最快联网"
+#  - 用 SYSTEM 账户: 无需 Windows 登录密码; 但创建/删除需管理员权限(弹一次 UAC)
 # --------------------------------------------------------------------------- #
-def autostart_enabled() -> bool:
+def _run_elevated(cmd_list) -> bool:
+    """以管理员权限异步执行(schtasks 创建/删除 SYSTEM 任务需提权)。返回是否已发起。"""
     if sys.platform != "win32":
         return False
+    exe, params = cmd_list[0], subprocess.list2cmdline(cmd_list[1:])
+    # ShellExecuteW "runas" 触发 UAC; SW_HIDE=0 静默
+    rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 0)
+    return int(rc) > 32
+
+
+def _clear_legacy_run_key():
+    """迁移: 清理旧版注册表 Run 自启项。"""
     try:
         import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
-            winreg.QueryValueEx(k, APP_REG_NAME)
-        return True
-    except (FileNotFoundError, OSError):
-        return False
-
-
-def set_autostart(enable: bool, minimized: bool):
-    if sys.platform != "win32":
-        return
-    import winreg
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
-                        winreg.KEY_SET_VALUE) as k:
-        if enable:
-            arg = " --minimized" if minimized else ""
-            winreg.SetValueEx(k, APP_REG_NAME, 0, winreg.REG_SZ,
-                              '"{}"{}'.format(exe_path(), arg))
-        else:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                            winreg.KEY_SET_VALUE) as k:
             try:
                 winreg.DeleteValue(k, APP_REG_NAME)
             except FileNotFoundError:
                 pass
+    except OSError:
+        pass
+
+
+def autostart_enabled() -> bool:
+    if sys.platform != "win32":
+        return False
+    r = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME],
+                       capture_output=True)
+    return r.returncode == 0
+
+
+def set_autostart(enable: bool):
+    """开启: 创建系统启动任务(运行 --headless, SYSTEM, 最高权限); 关闭: 删除。"""
+    if sys.platform != "win32":
+        return
+    _clear_legacy_run_key()
+    if enable:
+        cmd = ["schtasks", "/Create", "/TN", TASK_NAME,
+               "/TR", '"%s" --headless' % exe_path(),
+               "/SC", "ONSTART",     # 系统启动时(boot, 先于登录)
+               "/RU", "SYSTEM",      # 无需密码; 会话0, 故用无界面模式
+               "/RL", "HIGHEST",
+               "/F"]
+    else:
+        cmd = ["schtasks", "/Delete", "/TN", TASK_NAME, "/F"]
+    _run_elevated(cmd)
 
 
 # --------------------------------------------------------------------------- #
@@ -113,6 +149,7 @@ class Worker(threading.Thread):
         self.cmd_q = queue.Queue()        # UI -> Worker 命令
         self._stop = threading.Event()
         self.fail = 0                     # 连续失败计数(退避用)
+        self.last_online = None           # 上次在线状态(翻转时才记日志)
 
     def stop(self):
         self._stop.set()
@@ -168,15 +205,24 @@ class Worker(threading.Thread):
 
     # ---- 单次检测+重连(周期任务) ---- #
     def _periodic(self):
-        if self._probe():
-            self.fail = 0
+        online = self._probe()
+        if online:
+            if self.last_online is not True:        # 状态翻转才记日志(避免刷屏)
+                self._log("✓ 已连接")
+            self.last_online, self.fail = True, 0
             self._state("online")
             return
+        if self.last_online is not False:
+            self._log("⚠ 检测到断线, 尝试重连…")
+        self.last_online = False
         self._state("busy")
         ok = self._do_login()
         online = self._probe() if ok else False
         self._state("online" if online else "offline")
-        self.fail = 0 if online else self.fail + 1
+        if online:
+            self.last_online, self.fail = True, 0
+        else:
+            self.fail += 1
 
     # ---- 命令分发 ---- #
     # 注意: 不能命名为 _handle —— threading.Thread.start() 会把 OS 线程句柄
@@ -366,16 +412,35 @@ class App(tk.Tk):
     def _save_config(self):
         self._sync_config()
         data = dict(self.current_config)
-        data["auto_start"] = self.var_autostart.get()
+        want_autostart = self.var_autostart.get()
+        data["auto_start"] = want_autostart
         data["start_minimized"] = self.var_start_min.get()
         try:
             with open(config_path(), "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            # 同步开机自启注册表
-            set_autostart(self.var_autostart.get(), self.var_start_min.get())
-            messagebox.showinfo("已保存", "设置已保存到 config.json")
         except Exception as e:
             messagebox.showerror("保存失败", str(e))
+            return
+        # 开机自启 = 任务计划(系统启动时, SYSTEM 无界面服务), 创建/删除需一次 UAC
+        if want_autostart and not getattr(sys, "frozen", False):
+            messagebox.showwarning("开机自启",
+                "开机自启以「系统启动」任务计划实现, 需使用打包后的 EXE。\n"
+                "请先运行 build_exe.bat 生成 SrunAutoLogin.exe, 用 EXE 打开本程序后再开启此选项。")
+            self.var_autostart.set(False)
+        else:
+            set_autostart(want_autostart)
+            if want_autostart:
+                messagebox.showinfo("开机自启",
+                    "已发起创建任务计划(系统启动时联网, 先于桌面程序)。\n"
+                    "如弹出 UAC, 请点【是】允许。")
+            else:
+                messagebox.showinfo("开机自启",
+                    "已发起移除任务计划。\n如弹出 UAC, 请点【是】。")
+        # 任务由提权进程异步创建, 延后回填复选框为真实状态
+        self.after(1500, self._refresh_autostart)
+
+    def _refresh_autostart(self):
+        self.var_autostart.set(autostart_enabled())
 
     # ---------- 界面 ---------- #
     def _build_ui(self):
@@ -422,8 +487,10 @@ class App(tk.Tk):
 
         opts = ttk.Frame(f)
         opts.pack(fill="x", padx=8, pady=(8, 2))
-        ttk.Checkbutton(opts, text="开机自启", variable=self.var_autostart).pack(side="left")
-        ttk.Checkbutton(opts, text="静默启动到托盘", variable=self.var_start_min).pack(side="left", padx=12)
+        ttk.Checkbutton(opts, text="开机自启(系统启动时联网)",
+                        variable=self.var_autostart).pack(side="left")
+        ttk.Checkbutton(opts, text="启动后最小化到托盘",
+                        variable=self.var_start_min).pack(side="left", padx=12)
         ttk.Button(opts, text="保存设置", command=self._save_config).pack(side="right")
 
         # 日志
@@ -499,7 +566,53 @@ class App(tk.Tk):
         self.destroy()
 
 
+# --------------------------------------------------------------------------- #
+#  无界面服务模式(--headless): 仅运行 Worker 连网+断连重连, 无 Tk/托盘。
+#  用于"系统启动时"任务计划(会话0, SYSTEM 账户, 无桌面)。日志写 srun_service.log。
+# --------------------------------------------------------------------------- #
+class _HeadlessApp:
+    def __init__(self):
+        try:
+            self._logf = open(os.path.join(app_dir(), "srun_service.log"),
+                              "a", encoding="utf-8")
+        except OSError:
+            self._logf = None
+
+    @property
+    def current_config(self):
+        return load_config_file()          # 每次读取, 自动感知 GUI 改动
+
+    def post(self, event):
+        if event[0] == "log":
+            line = time.strftime("%Y-%m-%d ") + event[1]   # 日期 + (worker 已含 时:分:秒)
+            print(line, flush=True)
+            if self._logf:
+                try:
+                    self._logf.write(line + "\n"); self._logf.flush()
+                except OSError:
+                    pass
+
+
+def run_headless():
+    print("[headless] 无界面服务模式启动")
+    cfg = load_config_file()
+    if not cfg.get("username") or not cfg.get("password"):
+        print("[headless] config.json 未配置账号/密码, 退出")
+        return
+    app = _HeadlessApp()
+    worker = Worker(app)
+    worker.start()
+    try:
+        while True:
+            time.sleep(3600)               # 主线程常驻, Worker 是 daemon
+    except KeyboardInterrupt:
+        worker.stop()
+
+
 def main():
+    if "--headless" in sys.argv:           # 任务计划/系统服务入口
+        run_headless()
+        return
     app = App()
     app.mainloop()
 

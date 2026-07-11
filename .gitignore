@@ -2,6 +2,9 @@
 config.json
 config.local.json
 
+# ── 运行时日志(无界面服务写入) ──
+srun_service.log
+
 # ── 本地加密验证脚本(含测试向量, 不随仓库发布) ──
 _selftest.py
 
