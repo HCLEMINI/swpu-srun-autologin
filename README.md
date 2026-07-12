@@ -50,10 +50,15 @@ pip install pyinstaller pystray pillow
 # 2) 直接运行 GUI
 python srun_gui.py
 
-# 3) 或打包为单文件 EXE(Windows 双击 build_exe.bat 亦可)
-pyinstaller --noconfirm --onefile --windowed --hidden-import=pystray._win32 \
-    --collect-submodules pystray --name SrunAutoLogin srun_gui.py
+# 3) 或打包为单文件 EXE(Windows 双击 build_exe.bat 亦可, 自动 UPX 压缩到约 15MB)
+pyinstaller --noconfirm --onefile --windowed --clean \
+    --hidden-import=pystray._win32 --collect-submodules pystray \
+    --exclude-module numpy --exclude-module scipy --exclude-module pandas \
+    --exclude-module matplotlib \
+    --name SrunAutoLogin srun_gui.py
 ```
+
+> 体积优化：`build_exe.bat` 会自动下载 UPX 压缩工具并排除未使用的重模块（numpy/scipy 等会被 Pillow 顺带拉入，实际用不到），把 EXE 从约 31MB 压到 **约 15MB**。
 
 ### 配置
 

@@ -20,6 +20,9 @@ build/
 dist/
 *.spec
 
+# ── 打包时自动下载的 UPX 工具(第三方二进制, 不入库) ──
+upx_tool/
+
 # ── 编辑器/系统 ──
 .vscode/
 .idea/
