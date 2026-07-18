@@ -7,7 +7,7 @@
   * 启动即自动连接(默认「移动无线 @yd」, 可在界面修改)
   * 后台周期检测连通性, 断连自动重连(失败退避, 不狂刷)
   * 手动 连接 / 断开 / 立即检测
-  * 开机自启 = 任务计划(系统启动时以无界面服务运行, 先于桌面程序联网)
+  * 开机自启 = 任务计划(用户登录时触发, 当前用户运行, 免提权)
   * 配置持久化到同目录 config.json
   * --minimized 启动后最小化到任务栏; --headless 无界面服务模式
 
@@ -53,7 +53,7 @@ DEFAULT_CONFIG = {
 }
 APP_REG_NAME = "SrunAutoLogin"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-TASK_NAME = "SrunAutoLogin-Boot"   # 任务计划名: 系统启动时触发
+TASK_NAME = "SrunAutoLogin"   # 任务计划名: 用户登录时触发
 
 
 def app_dir() -> str:
@@ -85,16 +85,22 @@ def load_config_file() -> dict:
 
 
 # --------------------------------------------------------------------------- #
-#  开机自启 = 任务计划(系统启动时 /SC ONSTART, 以 SYSTEM 运行无界面服务)
-#  - 系统启动(boot)即触发, 先于用户登录与所有桌面程序, 真正"最快联网"
-#  - 用 SYSTEM 账户: 无需 Windows 登录密码; 但创建/删除需管理员权限(弹一次 UAC)
+#  开机自启 = 任务计划(用户登录时 /SC ONLOGON, 以当前用户运行 GUI 到托盘)
+#  - 登录时触发, 桌面会话已就绪, 直接跑 GUI(--minimized 缩到托盘), 无需无界面服务
+#  - 注意: 本机的任务计划根目录需管理员权限才能创建/删除任务, 故弹一次 UAC
+#          (这是机器安全配置决定的, 与触发类型无关; 普通用户机通常免 UAC)
 # --------------------------------------------------------------------------- #
+def _run_schtasks(args) -> int:
+    """非提权运行 schtasks(用于 Query), 不弹控制台; 返回 returncode。"""
+    return subprocess.run(["schtasks"] + args, capture_output=True,
+                          creationflags=0x08000000).returncode
+
+
 def _run_elevated(cmd_list) -> bool:
-    """以管理员权限异步执行(schtasks 创建/删除 SYSTEM 任务需提权)。返回是否已发起。"""
+    """以管理员权限异步执行(schtasks 创建/删除任务需提权)。返回是否已发起。"""
     if sys.platform != "win32":
         return False
     exe, params = cmd_list[0], subprocess.list2cmdline(cmd_list[1:])
-    # ShellExecuteW "runas" 触发 UAC; SW_HIDE=0 静默
     rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 0)
     return int(rc) > 32
 
@@ -116,22 +122,19 @@ def _clear_legacy_run_key():
 def autostart_enabled() -> bool:
     if sys.platform != "win32":
         return False
-    r = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME],
-                       capture_output=True)
-    return r.returncode == 0
+    return _run_schtasks(["/Query", "/TN", TASK_NAME]) == 0
 
 
 def set_autostart(enable: bool):
-    """开启: 创建系统启动任务(运行 --headless, SYSTEM, 最高权限); 关闭: 删除。"""
+    """开启: 创建登录时任务(运行 --minimized 到托盘, 当前用户); 关闭: 删除。"""
     if sys.platform != "win32":
         return
     _clear_legacy_run_key()
+    _run_elevated(["schtasks", "/Delete", "/TN", "SrunAutoLogin-Boot", "/F"])
     if enable:
         cmd = ["schtasks", "/Create", "/TN", TASK_NAME,
-               "/TR", '"%s" --headless' % exe_path(),
-               "/SC", "ONSTART",     # 系统启动时(boot, 先于登录)
-               "/RU", "SYSTEM",      # 无需密码; 会话0, 故用无界面模式
-               "/RL", "HIGHEST",
+               "/TR", '"%s" --minimized' % exe_path(),
+               "/SC", "ONLOGON",   # 用户登录时(桌面已就绪, 跑 GUI)
                "/F"]
     else:
         cmd = ["schtasks", "/Delete", "/TN", TASK_NAME, "/F"]
@@ -421,23 +424,18 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("保存失败", str(e))
             return
-        # 开机自启 = 任务计划(系统启动时, SYSTEM 无界面服务), 创建/删除需一次 UAC
+        # 开机自启 = 任务计划(登录时, 当前用户跑 GUI 到托盘), 本机需一次 UAC
         if want_autostart and not getattr(sys, "frozen", False):
             messagebox.showwarning("开机自启",
-                "开机自启以「系统启动」任务计划实现, 需使用打包后的 EXE。\n"
+                "开机自启需使用打包后的 EXE。\n"
                 "请先运行 build_exe.bat 生成 SrunAutoLogin.exe, 用 EXE 打开本程序后再开启此选项。")
             self.var_autostart.set(False)
         else:
             set_autostart(want_autostart)
-            if want_autostart:
-                messagebox.showinfo("开机自启",
-                    "已发起创建任务计划(系统启动时联网, 先于桌面程序)。\n"
-                    "如弹出 UAC, 请点【是】允许。")
-            else:
-                messagebox.showinfo("开机自启",
-                    "已发起移除任务计划。\n如弹出 UAC, 请点【是】。")
-        # 任务由提权进程异步创建, 延后回填复选框为真实状态
-        self.after(1500, self._refresh_autostart)
+            messagebox.showinfo("开机自启",
+                "已发起" + ("创建「登录时」自启任务" if want_autostart else "移除自启任务")
+                + "。\n如弹出 UAC, 请点【是】。")
+        self.after(2000, self._refresh_autostart)
 
     def _refresh_autostart(self):
         self.var_autostart.set(autostart_enabled())
@@ -487,7 +485,7 @@ class App(tk.Tk):
 
         opts = ttk.Frame(f)
         opts.pack(fill="x", padx=8, pady=(8, 2))
-        ttk.Checkbutton(opts, text="开机自启(系统启动时联网)",
+        ttk.Checkbutton(opts, text="开机自启(登录时)",
                         variable=self.var_autostart).pack(side="left")
         ttk.Checkbutton(opts, text="启动后最小化到托盘",
                         variable=self.var_start_min).pack(side="left", padx=12)
