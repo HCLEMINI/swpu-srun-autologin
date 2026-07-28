@@ -2,8 +2,14 @@
 config.json
 config.local.json
 
-# ── 运行时日志(无界面服务写入) ──
+# ── 运行时日志/诊断报告(程序写入, 不入库) ──
 srun_service.log
+网络诊断报告.txt
+
+# ── 误入仓库的压缩包/临时文件 ──
+*.zip
+*.fp
+*.tmp
 
 # ── 本地加密验证脚本(含测试向量, 不随仓库发布) ──
 _selftest.py
