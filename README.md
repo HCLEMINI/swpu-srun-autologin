@@ -1,29 +1,17 @@
-# SWPU 校园网自动登录客户端
+# SWPU 校园网自动登录客户端（旧版 · Python）
 
-> 针对 **西南石油大学** 校园网认证设计的桌面客户端。
-> 解决学校更新网络后，官方客户端在**有线连接上"秒连秒断"**、无法稳定使用的问题。
-
-两种实现，功能等价：
-- **🦀 Rust 版（推荐）**：`rust/`，原生 Win32 GUI + 托盘，**单个 EXE 仅 ~310 KB**，秒开，零依赖。
-- **🐍 Python 版**：Tkinter GUI，可打包单文件 EXE（~15 MB），适合排错与扩展。
-
-均支持**开机自启、断连自动重连、系统托盘静默运行**。
+> ⚠️ **本仓库已归档，仅保留旧版 Python 实现。**
+> 新版 **Rust 重构版**（单 EXE ~310 KB，秒开零依赖）已迁移至独立仓库：
+> 🔗 **[swpu-srun-autologin-rs](https://github.com/HCLEMINI/swpu-srun-autologin-rs)**
+>
+> 本仓库不再维护新功能，仅作历史参考与排错对照。
 
 ---
 
-## 🦀 Rust 版（快速开始）
+针对 **西南石油大学** 校园网认证设计的桌面客户端（Python 实现，Tkinter GUI）。
+解决学校更新网络后，官方客户端在**有线连接上"秒连秒断"**、无法稳定使用的问题。
 
-```bash
-cd rust
-cargo build --release          # 或用 rust/build.bat
-copy config.example.json ..\config.json  # 首次: 复制并填写账号密码
-# 产物: rust\release\srun.exe(运行时需同目录有 config.json)
-```
-
-- `srun.exe` 直接双击 → GUI；`--minimized` 静默进托盘；`--headless` 无界面服务。
-- 命令行：`srun --check / --login / --logout`；`--install / --uninstall` 管理开机自启(登录时)。
-- 认证加密（XXTEA + 自定义 base64 + HMAC-MD5 + SHA1）已与官方前端**逐字节交叉验证**。
-- 技术栈：纯 `std::net` 手写 HTTP（门户为明文 http，零网络依赖）+ `windows-sys` 裸 Win32 GUI/托盘 + `serde_json` 配置。
+支持**开机自启、断连自动重连、系统托盘静默运行**。
 
 ---
 
@@ -140,13 +128,9 @@ python srun_login.py --loop 30  # 常驻自愈:每 30 秒检测,断连重连
 ## 目录结构
 
 ```
-├── rust/                # 🦀 Rust 版(推荐, ~310KB 单 EXE)
-│   ├── src/             #   main/crypto/http/srun/config/gui/autostart
-│   ├── release/srun.exe #   成品(运行时需同目录 config.json)
-│   └── build.bat        #   一键打包
-├── srun_gui.py          # 🐍 Python 版 GUI(Tkinter + 托盘 + 后台监控)
-├── srun_login.py        # Python 核心认证库 + 命令行
-├── build_exe.bat        # Python 版一键打包 EXE
+├── srun_gui.py          # GUI(Tkinter + 托盘 + 后台监控)
+├── srun_login.py        # 核心认证库 + 命令行
+├── build_exe.bat        # 一键打包 EXE
 ├── netdiag.py           # 网络诊断脚本(连不上网时用)
 ├── 网络诊断.bat          # 双击即跑 netdiag.py, 生成报告
 ├── config.example.json  # 配置模板(复制为 config.json 使用)
@@ -154,6 +138,8 @@ python srun_login.py --loop 30  # 常驻自愈:每 30 秒检测,断连重连
 ├── LICENSE
 └── README.md
 ```
+
+> 注：Rust 重构版已独立成仓 → [swpu-srun-autologin-rs](https://github.com/HCLEMINI/swpu-srun-autologin-rs)
 
 ## 连不上网？一键诊断
 
