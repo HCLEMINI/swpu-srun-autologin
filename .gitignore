@@ -26,6 +26,10 @@ build/
 dist/
 *.spec
 
+# ── Rust 构建产物(仅提交 release/srun.exe 成品) ──
+rust/target/
+rust/release/config.json
+
 # ── 打包时自动下载的 UPX 工具(第三方二进制, 不入库) ──
 upx_tool/
 
